@@ -25,7 +25,9 @@ const StoreTraits& Traits(Store store);
 std::optional<Store> ParseStoreKey(std::string_view key);
 
 // A game's identity across stores. Steam values are canonical decimal app IDs (1..UINT32_MAX, no leading zero);
-// Local values are lower-case UUIDs. A default-constructed GameId is invalid.
+// Local values are lower-case UUIDs; Epic values are the store's app name: 32 lower-case hex digits, or 1..25
+// ASCII letters and digits (the key encodes them to fit the 48-byte key and 64-byte derived-ID limits).
+// A default-constructed GameId is invalid.
 struct GameId {
   Store store = Store::kSteam;
   std::string value;
@@ -36,6 +38,7 @@ struct GameId {
 
   static GameId Steam(std::uint32_t app);
   static GameId Local(std::string uuid);
+  static GameId Epic(std::string app_name);
 };
 
 bool operator==(const GameId& left, const GameId& right);
@@ -43,12 +46,13 @@ bool operator!=(const GameId& left, const GameId& right);
 // Store order, then Steam numerically, others by value.
 bool operator<(const GameId& left, const GameId& right);
 
-// Row and file key: Steam "440", Local "local-<uuid>". ParseKey accepts only those two forms.
+// Row and file key: Steam "440", Local "local-<uuid>", Epic "epic-<encoded app name>". ParseKey accepts only
+// those forms.
 std::string ToKey(const GameId& id);
 std::optional<GameId> ParseKey(std::string_view key);
 
 // Derived identifiers, [a-z0-9-] and at most 64 bytes.
-std::string ToInstallId(const GameId& id);  // "steam-440", "local-<uuid>"
+std::string ToInstallId(const GameId& id);  // "steam-440", "local-<uuid>", "epic-<encoded app name>"
 std::optional<GameId> ParseInstallId(std::string_view install_id);
 std::string GeneratedRecipeId(const GameId& id);  // "steam-440-auto", "local-<uuid>-auto"
 std::string ProfileId(const GameId& id);          // "playden-steam-440", "playden-local-<uuid>"

@@ -13,6 +13,113 @@ constexpr StoreTraits kEpicTraits{Store::kEpic, "epic", "Epic", true, false, tru
 constexpr StoreTraits kLocalTraits{Store::kLocal, "local", "Imported", false, false, false};
 
 constexpr std::string_view kLocalPrefix = "local-";
+constexpr std::string_view kEpicPrefix = "epic-";
+
+// Epic app names are case-sensitive, but keys are [a-z0-9-]. A 32-digit lower-case hex name (a catalog ID)
+// becomes 'h' plus its 16 bytes in lower-case base32 (26 characters); any other name of 1..25 ASCII letters
+// and digits becomes 't' plus its bytes in the same base32. The first letter says which, so decoding is exact.
+constexpr std::size_t kEpicTextMax = 25;
+constexpr std::string_view kBase32 = "abcdefghijklmnopqrstuvwxyz234567";
+
+bool IsLowerHex(char character);
+
+bool IsEpicHex(std::string_view text) {
+  if (text.size() != 32) return false;
+  for (const char character : text)
+    if (!IsLowerHex(character)) return false;
+  return true;
+}
+
+bool IsEpicText(std::string_view text) {
+  if (text.empty() || text.size() > kEpicTextMax) return false;
+  for (const char character : text) {
+    const bool alnum = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+                       (character >= '0' && character <= '9');
+    if (!alnum) return false;
+  }
+  return true;
+}
+
+bool IsEpicValue(std::string_view text) { return IsEpicHex(text) || IsEpicText(text); }
+
+std::string Base32Encode(std::string_view bytes) {
+  std::string out;
+  std::uint32_t buffer = 0;
+  int bits = 0;
+  for (const char byte : bytes) {
+    buffer = (buffer << 8) | static_cast<unsigned char>(byte);
+    bits += 8;
+    while (bits >= 5) {
+      out.push_back(kBase32[(buffer >> (bits - 5)) & 31]);
+      bits -= 5;
+    }
+    buffer &= (1u << bits) - 1;
+  }
+  if (bits > 0) out.push_back(kBase32[(buffer << (5 - bits)) & 31]);
+  return out;
+}
+
+// Canonical only: characters from the alphabet and zero padding bits, so each byte string has one encoding.
+std::optional<std::string> Base32Decode(std::string_view text) {
+  std::string out;
+  std::uint32_t buffer = 0;
+  int bits = 0;
+  for (const char character : text) {
+    const auto position = kBase32.find(character);
+    if (position == std::string_view::npos) return std::nullopt;
+    buffer = (buffer << 5) | static_cast<std::uint32_t>(position);
+    bits += 5;
+    if (bits >= 8) {
+      out.push_back(static_cast<char>((buffer >> (bits - 8)) & 0xff));
+      bits -= 8;
+    }
+    buffer &= (1u << bits) - 1;
+  }
+  if (bits >= 5 || buffer != 0) return std::nullopt;
+  return out;
+}
+
+std::string HexToBytes(std::string_view hex) {
+  std::string out;
+  for (std::size_t index = 0; index < hex.size(); index += 2) {
+    const auto nibble = [](char character) { return character <= '9' ? character - '0' : character - 'a' + 10; };
+    out.push_back(static_cast<char>((nibble(hex[index]) << 4) | nibble(hex[index + 1])));
+  }
+  return out;
+}
+
+std::string BytesToHex(std::string_view bytes) {
+  constexpr std::string_view digits = "0123456789abcdef";
+  std::string out;
+  for (const char byte : bytes) {
+    out.push_back(digits[(static_cast<unsigned char>(byte) >> 4) & 15]);
+    out.push_back(digits[static_cast<unsigned char>(byte) & 15]);
+  }
+  return out;
+}
+
+std::string EncodeEpic(std::string_view value) {
+  if (IsEpicHex(value)) return "h" + Base32Encode(HexToBytes(value));
+  return "t" + Base32Encode(value);
+}
+
+std::optional<std::string> DecodeEpic(std::string_view encoded) {
+  if (encoded.size() < 2) return std::nullopt;
+  const auto bytes = Base32Decode(encoded.substr(1));
+  if (!bytes) return std::nullopt;
+  std::string value;
+  if (encoded.front() == 'h') {
+    if (bytes->size() != 16) return std::nullopt;
+    value = BytesToHex(*bytes);
+  } else if (encoded.front() == 't') {
+    value = *bytes;
+    if (IsEpicHex(value)) return std::nullopt;  // a hex name has only the 'h' form
+  } else {
+    return std::nullopt;
+  }
+  if (!IsEpicValue(value) || EncodeEpic(value) != encoded) return std::nullopt;
+  return value;
+}
 
 std::optional<std::uint32_t> ParseSteamValue(std::string_view text) {
   if (text.empty() || text.front() == '0') return std::nullopt;
@@ -58,8 +165,8 @@ bool GameId::valid() const {
   switch (store) {
     case Store::kSteam: return ParseSteamValue(value).has_value();
     case Store::kLocal: return IsLocalValue(value);
-    case Store::kGog:
-    case Store::kEpic: return false;  // not implemented yet
+    case Store::kEpic: return IsEpicValue(value);
+    case Store::kGog: return false;  // not implemented yet
   }
   return false;
 }
@@ -75,6 +182,11 @@ GameId GameId::Steam(std::uint32_t app) {
 }
 
 GameId GameId::Local(std::string uuid) { return {Store::kLocal, std::move(uuid)}; }
+
+GameId GameId::Epic(std::string app_name) {
+  if (!IsEpicValue(app_name)) return {};
+  return {Store::kEpic, std::move(app_name)};
+}
 
 bool operator==(const GameId& left, const GameId& right) {
   return left.store == right.store && left.value == right.value;
@@ -92,6 +204,7 @@ bool operator<(const GameId& left, const GameId& right) {
 
 std::string ToKey(const GameId& id) {
   if (id.store == Store::kLocal) return std::string(kLocalPrefix) + id.value;
+  if (id.store == Store::kEpic) return std::string(kEpicPrefix) + EncodeEpic(id.value);
   return id.value;
 }
 
@@ -100,6 +213,11 @@ std::optional<GameId> ParseKey(std::string_view key) {
     const auto value = key.substr(kLocalPrefix.size());
     if (!IsLocalValue(value)) return std::nullopt;
     return GameId::Local(std::string(value));
+  }
+  if (key.substr(0, kEpicPrefix.size()) == kEpicPrefix) {
+    const auto value = DecodeEpic(key.substr(kEpicPrefix.size()));
+    if (!value) return std::nullopt;
+    return GameId::Epic(*value);
   }
   if (const auto app = ParseSteamValue(key)) return GameId::Steam(*app);
   return std::nullopt;
@@ -118,6 +236,7 @@ std::optional<GameId> ParseInstallId(std::string_view install_id) {
     return GameId::Steam(*app);
   }
   if (install_id.substr(0, kLocalPrefix.size()) == kLocalPrefix) return ParseKey(install_id);
+  if (install_id.substr(0, kEpicPrefix.size()) == kEpicPrefix) return ParseKey(install_id);
   return std::nullopt;
 }
 
