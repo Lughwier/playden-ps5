@@ -28,12 +28,41 @@ int main() {
   Check(!(GameId{Store::kSteam, "0440"}).valid(), "a Steam value with a leading zero is invalid");
   Check(!(GameId{Store::kGog, "1"}).valid(), "GOG is not implemented yet");
 
+  constexpr const char* kEpicHex = "d8b1f3a09c2e4d7fa6b5018c3e9d2f47";
+  Check(GameId::Epic(kEpicHex).valid() && GameId::Epic("Fortnite").valid(), "Epic hex and text names are valid");
+  Check(GameId::Epic("").value.empty() && GameId::Epic("") == GameId{}, "an empty Epic name is invalid");
+  Check(!GameId::Epic("Bad Name").valid() && !GameId::Epic("Bad-Name").valid(), "Epic names are letters and digits only");
+  Check(!GameId::Epic("ABCDEF0123456789ABCDEF0123456789").valid(), "a 32-digit upper-case hex name is not accepted");
+  Check(!GameId::Epic(std::string(26, 'a')).valid(), "a text name over 25 characters is not accepted");
+  Check(!GameId::Epic(kEpicHex).steam_app(), "an Epic game has no Steam app");
+
   const auto max = GameId::Steam(std::numeric_limits<std::uint32_t>::max());
   Check(ToKey(max) == "4294967295" && ParseKey("4294967295") == max, "UINT32_MAX round trips");
   Check(ToKey(GameId::Steam(440)) == "440", "Steam key is the bare app ID");
   Check(ParseKey("440") == GameId::Steam(440), "bare digits parse as Steam");
   Check(ToKey(GameId::Local(kUuid)) == std::string("local-") + kUuid, "Local key has the local- prefix");
   Check(ParseKey(std::string("local-") + kUuid) == GameId::Local(kUuid), "Local key round trips");
+
+  for (const char* name : {"Fortnite", "Salt", "a", "Z9", "ABCDEFGHIJKLMNOPQRSTUVWXY", kEpicHex,
+                           "00000000000000000000000000000000", "ffffffffffffffffffffffffffffffff"}) {
+    const auto epic = GameId::Epic(name);
+    Check(epic.valid() && ParseKey(ToKey(epic)) == epic, "an Epic key round trips");
+    Check(ParseInstallId(ToInstallId(epic)) == epic, "an Epic install ID round trips");
+    Check(ToKey(epic).rfind("epic-", 0) == 0 && ToKey(epic) == ToInstallId(epic), "Epic key is the install ID");
+  }
+  Check(ToKey(GameId::Epic("Fortnite")) != ToKey(GameId::Epic("fortnite")), "Epic names keep their case in the key");
+  Check(ToKey(GameId::Epic(kEpicHex)).size() == 5 + 27, "a hex name is 27 characters after the prefix");
+  Check(ToKey(GameId::Epic("Fortnite")) == "epic-tizxxe5donf2gk", "Epic text name key is stable");
+  Check(ParseKey("epic-tizxxe5donf2gk") == GameId::Epic("Fortnite"), "a stored Epic key still parses");
+  for (const char* rejected : {"epic-", "epic-h", "epic-t", "epic-x", "epic-TIZXXE5DONF2GK", "epic-tizxxe5donf2gl",
+                               "epic-tizxxe5donf2gk=", "epic-hmfrgg", "epic-t" "mfrgg" "ggg", "Epic-tijxg4zlooj3gk"}) {
+    if (ParseKey(rejected)) {
+      std::fprintf(stderr, "FAIL: ParseKey accepted \"%s\"\n", rejected);
+      return 1;
+    }
+  }
+  Check(GameId::Steam(4294967295u) < GameId::Epic("Fortnite") && GameId::Epic("Fortnite") < GameId::Local(kUuid),
+        "Epic sorts between Steam and Local");
 
   for (const char* rejected : {"", "0", "0440", "4294967296", "99999999999999999999", "+1", "-1", " 440", "440 ",
                                "440x", "local-", "local-1B4E28BA-2FA1-11D2-883F-0016D3CCA427",
@@ -72,7 +101,7 @@ int main() {
   Check(GeneratedRecipeId(local) == std::string("local-") + kUuid + "-auto", "Local generated recipe ID");
   Check(ProfileId(local) == std::string("playden-local-") + kUuid, "Local profile ID");
 
-  for (const auto& id : {max, local}) {
+  for (const auto& id : {max, local, GameId::Epic(kEpicHex), GameId::Epic("ABCDEFGHIJKLMNOPQRSTUVWXY")}) {
     for (const auto& derived : {ToKey(id), ToInstallId(id), GeneratedRecipeId(id), ProfileId(id)}) {
       bool allowed = derived.size() <= 64;
       for (const char character : derived)
